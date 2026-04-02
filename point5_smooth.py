@@ -30,7 +30,7 @@ dat["smt_kdp"] = np.append(smt_kdp, np.nan)
 out = dat[["dis", "phi", "reg_phi", "smt_kdp"]]
 
 # 7. 导出
-save_path = "./kdp_300_smt.txt"
+save_path = "datatxt/kdp_300_smt.txt"
 out.to_csv(save_path, index=False, float_format="%.6f")
 
 print("已保存:", save_path)
