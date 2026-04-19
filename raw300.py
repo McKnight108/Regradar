@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 
 # 1. 读取雷达文件
-f = cinrad.io.StandardData(r"D:\Chan\Documents\radar_raw_data\ZA003\Z_RADR_I_ZA003_20230730212101_O_DOR_YLD2-D_CAP_FMT.bin.bz2")
+f = cinrad.io.StandardData(r"C:\Users\Chan\Documents\raw_radar_data\ZA003\Z_RADR_I_ZA003_20230730212101_O_DOR_YLD2-D_CAP_FMT.bin.bz2")
 
 # 2. 读取 PHI
 ds = f.get_data(2, 140, "PHI")
@@ -41,6 +41,7 @@ dat = dat.dropna()
 save_path = "datatxt/phdp_300.txt"
 dat.to_csv(save_path, index=False)
 
-print("已保存:", save_path)
+#print("已保存:", save_path)
 print(dat.head())
 print(dat.tail())
+print(f"{azi_deg:.3f}°")
