@@ -2,7 +2,7 @@ import cinrad
 import matplotlib.pyplot as plt
 import numpy as np
 
-nFiles = r"D:\Chan\Documents\radar_raw_data\ZA001\Z_RADR_I_ZA001_20230730143000_O_DOR_YLD2-D_CAP_FMT.bin.bz2"
+nFiles = r"C:\Users\Chan\Documents\raw_radar_data\ZA003\Z_RADR_I_ZA003_20230730212101_O_DOR_YLD2-D_CAP_FMT.bin.bz2"
 
 f = cinrad.io.StandardData(nFiles)
 

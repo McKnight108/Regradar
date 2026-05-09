@@ -6,7 +6,7 @@ dat = pd.read_csv(r'./datatxt/kdp_300.txt')
 r   = dat['dis'].values
 phi = dat['reg_phi'].values
 
-window = 7          # ① 适当加大窗口，抑制噪声
+window = 15         # ① 适当加大窗口，抑制噪声
 half_w = window // 2
 kdp_lsf = np.full(len(phi), np.nan)
 
@@ -23,4 +23,4 @@ for i in range(half_w, len(phi) - half_w):
 kdp_lsf = np.where(kdp_lsf < 0, 0.0, kdp_lsf)
 
 dat['kdp_lsf'] = kdp_lsf
-dat.to_csv('kdp_lsf_300.txt', index=False)
+dat.to_csv('kdp_lsf_300_15.txt', index=False)

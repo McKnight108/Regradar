@@ -11,11 +11,13 @@ ds_ref = f.get_data(2, 120, "REF")
 ds_rho = f.get_data(2, 120, "RHO")
 ds_zdr = f.get_data(2, 120, "ZDR")
 ds_phi = f.get_data(2, 120, "PHI")
+ds_kdp = f.get_data(2, 120, "KDP")
 
 zh = ds_ref["REF"].values.astype(float)
 rho = ds_rho["RHO"].values.astype(float)
 zdr = ds_zdr["ZDR"].values.astype(float)
 phi = ds_phi["PHI"].values.astype(float)
+kdp = ds_kdp["KDP"].values.astype(float)
 
 distance = ds_phi["distance"].values.astype(float)
 if distance.ndim == 1:
@@ -40,7 +42,7 @@ for iaz in range(phi.shape[0]):
             if irng > 0:
                 phi[iaz, irng] = phi[iaz, irng - 1]
 
-window = 7
+window = 15
 pad = window // 2
 
 zdr_pad = np.pad(zdr, ((0, 0), (pad, pad)), mode="constant", constant_values=np.nan)
@@ -118,6 +120,40 @@ for iaz in range(phi_qc.shape[0]):
 
 phi_reg[~(np.isfinite(zh) & np.isfinite(phi))] = np.nan
 
+precip_mask = (
+    np.isfinite(zh_qc) &
+    np.isfinite(phi_reg) &
+    np.isfinite(rho) &
+    (rho > 0.9) &
+    (zh_qc > 15.0)
+)
+
+effective_mask = np.zeros_like(precip_mask, dtype=bool)
+
+min_gates = 8
+min_dphi = 3.0
+
+for iaz in range(precip_mask.shape[0]):
+    idx = np.where(precip_mask[iaz, :])[0]
+
+    if idx.size == 0:
+        continue
+
+    split_pos = np.where(np.diff(idx) > 1)[0]
+    start_pos = np.r_[0, split_pos + 1]
+    end_pos = np.r_[split_pos, idx.size - 1]
+
+    for s, e in zip(start_pos, end_pos):
+        seg_idx = idx[s:e + 1]
+
+        if seg_idx.size < min_gates:
+            continue
+
+        dphi = phi_reg[iaz, seg_idx[-1]] - phi_reg[iaz, seg_idx[0]]
+
+        if np.isfinite(dphi) and dphi >= min_dphi:
+            effective_mask[iaz, seg_idx] = True
+
 kdp_lsf = np.full_like(phi_reg, np.nan, dtype=float)
 
 if distance.ndim == 1:
@@ -166,6 +202,58 @@ for iaz in range(phi_reg.shape[0]):
         kdp_lsf[iaz, irng] = 0.5 * p[0]
 kdp_lsf[~(np.isfinite(zh) & np.isfinite(phi))] = np.nan
 
+alpha_ah = 0.32
+
+alpha_phi = 0.32
+
+pia_kdp = np.full_like(kdp_lsf, np.nan, dtype=float)
+zh_attcorr = zh_qc.copy()
+
+for iaz in range(effective_mask.shape[0]):
+    idx = np.where(effective_mask[iaz, :])[0]
+
+    if idx.size == 0:
+        continue
+
+    split_pos = np.where(np.diff(idx) > 1)[0]
+    start_pos = np.r_[0, split_pos + 1]
+    end_pos = np.r_[split_pos, idx.size - 1]
+
+    for s, e in zip(start_pos, end_pos):
+        seg_idx = idx[s:e + 1]
+
+        if seg_idx.size < min_gates:
+            continue
+
+        phi_start = phi_reg[iaz, seg_idx[0]]
+        phi_end = phi_reg[iaz, seg_idx[-1]]
+
+        if (not np.isfinite(phi_start)) or (not np.isfinite(phi_end)):
+            continue
+
+        dphi = phi_end - phi_start
+        if dphi < min_dphi:
+            continue
+
+        pia_total = alpha_phi * dphi
+
+        kdp_seg = kdp_lsf[iaz, seg_idx].copy()
+        kdp_seg[~np.isfinite(kdp_seg)] = 0.0
+        kdp_seg[kdp_seg < 0.0] = 0.0
+
+        weight_sum = np.sum(kdp_seg)
+
+        if weight_sum > 0:
+            frac = kdp_seg / weight_sum
+        else:
+            frac = np.full(seg_idx.size, 1.0 / seg_idx.size, dtype=float)
+
+        pia_inc = pia_total * frac
+        pia_cum_seg = np.cumsum(pia_inc)
+
+        pia_kdp[iaz, seg_idx] = pia_cum_seg
+        zh_attcorr[iaz, seg_idx] = zh_qc[iaz, seg_idx] + pia_cum_seg
+
 file_dir = os.path.dirname(file_path)
 file_name = os.path.basename(file_path)
 
@@ -173,7 +261,7 @@ if file_name.endswith(".bz2"):
     file_name = os.path.splitext(file_name)[0]
 
 file_stem = os.path.splitext(file_name)[0]
-out_npz = os.path.join(file_dir, file_stem + "_滤除杂波回归.npz")
+out_npz = os.path.join(file_dir, file_stem + "_ZPHI.npz")
 
 np.savez_compressed(
     out_npz,
@@ -186,6 +274,7 @@ np.savez_compressed(
     rho=rho,
     zdr=zdr,
     phi=phi,
+    kdp=kdp,
     sd_zdr=sd_zdr,
     sd_phi=sd_phi,
     zh_qc=zh_qc,
@@ -193,7 +282,9 @@ np.savez_compressed(
     zdr_qc=zdr_qc,
     phi_qc=phi_qc,
     phi_reg=phi_reg,
-    kdp_lsf=kdp_lsf
+    kdp_lsf=kdp_lsf,
+    pia_kdp=pia_kdp,
+    zh_attcorr=zh_attcorr
 )
 
 print(out_npz)
