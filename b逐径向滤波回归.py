@@ -2,9 +2,8 @@ import os
 import cinrad
 import numpy as np
 from sklearn.isotonic import IsotonicRegression
-from scipy.ndimage import generic_filter
+import scipy.ndimage as ndimage
 
-# ================= 1. 读取数据 =================
 file_path = r"C:\Users\Chan\Documents\raw_radar_data\ZA003\Z_RADR_I_ZA003_20230730212101_O_DOR_YLD2-D_CAP_FMT.bin.bz2"
 
 f = cinrad.io.StandardData(file_path)
@@ -13,13 +12,11 @@ ds_ref = f.get_data(2, 120, "REF")
 ds_rho = f.get_data(2, 120, "RHO")
 ds_zdr = f.get_data(2, 120, "ZDR")
 ds_phi = f.get_data(2, 120, "PHI")
-ds_kdp = f.get_data(2, 120, "KDP") # 读取以备写入输出文件
 
 zh = ds_ref["REF"].values.astype(float)
 rho = ds_rho["RHO"].values.astype(float)
 zdr = ds_zdr["ZDR"].values.astype(float)
 phi = ds_phi["PHI"].values.astype(float)
-kdp = ds_kdp["KDP"].values.astype(float)
 
 distance = ds_phi["distance"].values.astype(float)
 if distance.ndim == 1:
@@ -32,7 +29,6 @@ site_name = str(ds_ref.attrs["site_name"])
 radar_lon = float(ds_ref.attrs["site_longitude"])
 radar_lat = float(ds_ref.attrs["site_latitude"])
 
-# 沿径向填充孤立缺失值
 for iaz in range(zdr.shape[0]):
     for irng in range(zdr.shape[1]):
         if not np.isfinite(zdr[iaz, irng]):
@@ -45,8 +41,7 @@ for iaz in range(phi.shape[0]):
             if irng > 0:
                 phi[iaz, irng] = phi[iaz, irng - 1]
 
-# ================= 2. 质量控制 (质控变量准备) =================
-window = 7 # 沿用最新版的窗长7（初版为15）
+window = 7
 pad = window // 2
 
 zdr_pad = np.pad(zdr, ((0, 0), (pad, pad)), mode="constant", constant_values=np.nan)
@@ -100,8 +95,6 @@ rho_qc[non_meteo_mask] = np.nan
 zdr_qc[non_meteo_mask] = np.nan
 phi_qc[non_meteo_mask] = np.nan
 
-
-# ================= 3. [最新版算法] PHI的初始相位归零与回归滤波 =================
 for iaz in range(phi_qc.shape[0]):
     valid_indices = np.where(np.isfinite(phi_qc[iaz, :]))[0]
     if valid_indices.size > 0:
@@ -133,27 +126,9 @@ for iaz in range(phi_qc.shape[0]):
 
 phi_reg[~(np.isfinite(zh) & np.isfinite(phi))] = np.nan
 
-# 方位角方向二维中值滤波平滑，增强切向连续性，抑制径向条纹
-phi_reg = generic_filter(
-    phi_reg,
-    np.nanmedian,
-    size=(7, 3)
-)
-
-# ================= 4. [最新版算法] KDP 计算 =================
 kdp_lsf = np.full_like(phi_reg, np.nan, dtype=float)
 
-# 动态获取径向分辨率
-if distance.ndim == 1:
-    gate_diffs = np.diff(distance)
-else:
-    gate_diffs = np.diff(distance_2d, axis=1).reshape(-1)
-
-gate_diffs = gate_diffs[np.isfinite(gate_diffs) & (gate_diffs > 0)]
-if gate_diffs.size > 0:
-    gate_len = np.nanmedian(gate_diffs)
-else:
-    gate_len = 0.075
+gate_len = 0.075
 
 for iaz in range(phi_reg.shape[0]):
     phi_ray = phi_reg[iaz, :]
@@ -162,10 +137,6 @@ for iaz in range(phi_reg.shape[0]):
 
     for irng in range(phi_reg.shape[1]):
         if not np.isfinite(phi_ray[irng]):
-            continue
-        if not np.isfinite(zh_ray[irng]):  # 初版的鲁棒性校验
-            continue
-        if not np.isfinite(x_ray[irng]):
             continue
 
         if zh_ray[irng] > 45:
@@ -182,7 +153,6 @@ for iaz in range(phi_reg.shape[0]):
         yw = phi_ray[i0:i1]
 
         ok = np.isfinite(xw) & np.isfinite(yw)
-
         if np.sum(ok) < 3:
             kdp_lsf[iaz, irng] = 0.0
             continue
@@ -190,116 +160,30 @@ for iaz in range(phi_reg.shape[0]):
         p = np.polyfit(xw[ok], yw[ok], 1)
         kdp_lsf[iaz, irng] = 0.5 * p[0]
 
-kdp_lsf[~np.isfinite(phi) & np.isfinite(phi_qc)] = np.nan
+kdp_lsf[~np.isfinite(phi)] = np.nan
 
-# ================= 5. [初版算法] ZPHI 衰减订正 =================
-precip_mask = (
-    np.isfinite(zh_qc) &
-    np.isfinite(phi_reg) &
-    np.isfinite(rho) &
-    (rho > 0.9) &
-    (zh_qc > 15.0)
-)
+# === 修正后的 KDP 二维空间平滑处理 ===
 
-effective_mask = np.zeros_like(precip_mask, dtype=bool)
+# 关键修正 1：提前记录平滑前，KDP 真正有效的数据掩膜
+original_nan_mask = np.isnan(kdp_lsf)
+valid_mask = (~original_nan_mask).astype(float)
 
-min_gates = 8
-min_dphi = 3.0
+kdp_filled = np.nan_to_num(kdp_lsf, nan=0.0)
+sigma = (1, 2)
+kdp_smoothed = ndimage.gaussian_filter(kdp_filled, sigma=sigma)
+mask_smoothed = ndimage.gaussian_filter(valid_mask, sigma=sigma)
 
-for iaz in range(precip_mask.shape[0]):
-    idx = np.where(precip_mask[iaz, :])[0]
+# 关键修正 2：用 NaN 初始化背景，绝对不能用 0
+kdp_final = np.full_like(kdp_lsf, np.nan)
+valid_pixels = mask_smoothed > 0.01
 
-    if idx.size == 0:
-        continue
+kdp_final[valid_pixels] = kdp_smoothed[valid_pixels] / mask_smoothed[valid_pixels]
 
-    split_pos = np.where(np.diff(idx) > 1)[0]
-    start_pos = np.r_[0, split_pos + 1]
-    end_pos = np.r_[split_pos, idx.size - 1]
+# 关键修正 3：使用平滑前严格的 NaN 模具进行终极裁剪
+kdp_final[original_nan_mask] = np.nan
 
-    for s, e in zip(start_pos, end_pos):
-        seg_idx = idx[s:e + 1]
+kdp_lsf = kdp_final
 
-        if seg_idx.size < min_gates:
-            continue
-
-        dphi = phi_reg[iaz, seg_idx[-1]] - phi_reg[iaz, seg_idx[0]]
-
-        if np.isfinite(dphi) and dphi >= min_dphi:
-            effective_mask[iaz, seg_idx] = True
-
-alpha_ah = 0.32
-alpha_phi = 0.32
-
-pia_kdp = np.zeros_like(kdp_lsf, dtype=float)
-zh_attcorr = zh.copy()
-
-for iaz in range(effective_mask.shape[0]):
-
-    pia_ray = np.zeros(kdp_lsf.shape[1], dtype=float)
-
-    idx = np.where(effective_mask[iaz, :])[0]
-
-    if idx.size == 0:
-        zh_attcorr[iaz, :] = zh[iaz, :]
-        continue
-
-    split_pos = np.where(np.diff(idx) > 1)[0]
-    start_pos = np.r_[0, split_pos + 1]
-    end_pos = np.r_[split_pos, idx.size - 1]
-
-    for s, e in zip(start_pos, end_pos):
-
-        seg_idx = idx[s:e + 1]
-
-        if seg_idx.size < min_gates:
-            continue
-
-        phi_start = phi_reg[iaz, seg_idx[0]]
-        phi_end = phi_reg[iaz, seg_idx[-1]]
-
-        if (not np.isfinite(phi_start)) or (not np.isfinite(phi_end)):
-            continue
-
-        dphi = phi_end - phi_start
-
-        if dphi < min_dphi:
-            continue
-
-        pia_total = alpha_phi * dphi
-
-        kdp_seg = kdp_lsf[iaz, seg_idx].copy()
-
-        kdp_seg[~np.isfinite(kdp_seg)] = 0.0
-        kdp_seg[kdp_seg < 0.0] = 0.0
-
-        weight_sum = np.sum(kdp_seg)
-
-        if weight_sum > 0:
-            frac = kdp_seg / weight_sum
-        else:
-            frac = np.full(seg_idx.size, 1.0 / seg_idx.size, dtype=float)
-
-        pia_inc = pia_total * frac
-        pia_cum_seg = np.cumsum(pia_inc)
-
-        pia_ray[seg_idx] += pia_cum_seg
-
-        end_gate = seg_idx[-1]
-
-        if end_gate + 1 < pia_ray.size:
-            pia_ray[end_gate + 1:] += pia_cum_seg[-1]
-
-    pia_kdp[iaz, :] = pia_ray
-
-    valid_zh = np.isfinite(zh[iaz, :])
-
-    zh_attcorr[iaz, valid_zh] = (
-        zh[iaz, valid_zh] + pia_ray[valid_zh]
-    )
-
-    zh_attcorr[iaz, ~valid_zh] = np.nan
-
-# ================= 6. 保存数据 =================
 file_dir = os.path.dirname(file_path)
 file_name = os.path.basename(file_path)
 
@@ -307,7 +191,7 @@ if file_name.endswith(".bz2"):
     file_name = os.path.splitext(file_name)[0]
 
 file_stem = os.path.splitext(file_name)[0]
-out_npz = os.path.join(file_dir, file_stem + "_滤波回归ZPHI衰减订正.npz")
+out_npz = os.path.join(file_dir, file_stem + "_滤除杂波回归-扣除初始相位.npz")
 
 np.savez_compressed(
     out_npz,
@@ -320,7 +204,6 @@ np.savez_compressed(
     rho=rho,
     zdr=zdr,
     phi=phi,
-    kdp=kdp,
     sd_zdr=sd_zdr,
     sd_phi=sd_phi,
     zh_qc=zh_qc,
@@ -328,9 +211,7 @@ np.savez_compressed(
     zdr_qc=zdr_qc,
     phi_qc=phi_qc,
     phi_reg=phi_reg,
-    kdp_lsf=kdp_lsf,
-    pia_kdp=pia_kdp,
-    zh_attcorr=zh_attcorr
+    kdp_lsf=kdp_lsf
 )
 
-print(f"数据已保存至: {out_npz}")
+print(out_npz)

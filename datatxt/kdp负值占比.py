@@ -7,8 +7,7 @@ df = pd.read_csv(input_path)
 
 cols = ["kdp", "reg_kdp", "kdp_lsf"]
 
-all_valid = np.concatenate([df[col].dropna().to_numpy(dtype=float) for col in cols])
-bins = np.linspace(np.nanmin(all_valid), np.nanmax(all_valid), 81)
+bins = np.linspace(-16, 16, 7)
 bin_center = (bins[:-1] + bins[1:]) / 2
 
 hist_out = pd.DataFrame()

@@ -1,7 +1,7 @@
 import os
 import numpy as np
 
-npz_path = r"C:\Users\Chan\Documents\raw_radar_data\ZA003\Z_RADR_I_ZA003_20230730212101_O_DOR_YLD2-D_CAP_FMT_ZPHI.npz"
+npz_path = r"C:\Users\Chan\Documents\raw_radar_data\ZA003\Z_RADR_I_ZA003_20230730212101_O_DOR_YLD2-D_CAP_FMT_滤波回归ZPHI衰减订正.npz"
 ray_idx = 147
 
 data = np.load(npz_path)

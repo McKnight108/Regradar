@@ -94,6 +94,13 @@ rho_qc[non_meteo_mask] = np.nan
 zdr_qc[non_meteo_mask] = np.nan
 phi_qc[non_meteo_mask] = np.nan
 
+for iaz in range(phi_qc.shape[0]):
+    valid_indices = np.where(np.isfinite(phi_qc[iaz, :]))[0]
+    if valid_indices.size > 0:
+        first_points_idx = valid_indices[:9]
+        initial_phase = np.mean(phi_qc[iaz, first_points_idx])
+        phi_qc[iaz, :] -= initial_phase
+
 phi_reg = np.full_like(phi_qc, np.nan, dtype=float)
 
 for iaz in range(phi_qc.shape[0]):
@@ -173,7 +180,7 @@ if file_name.endswith(".bz2"):
     file_name = os.path.splitext(file_name)[0]
 
 file_stem = os.path.splitext(file_name)[0]
-out_npz = os.path.join(file_dir, file_stem + "_滤除杂波回归.npz")
+out_npz = os.path.join(file_dir, file_stem + "_滤除杂波回归-扣除初始相位.npz")
 
 np.savez_compressed(
     out_npz,
